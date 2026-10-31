@@ -52,6 +52,8 @@ class setViewController: UIViewController, UITextFieldDelegate,UIColorPickerView
     var rationum:Float = 0.0
     var strokecolor:UIColor?
     var strokecolorInts:[Int]=[0,0,0,255]
+    /// 送出中旗標：避免「確認設定」被連點而同時發出多個 /synthesize 請求。
+    private var isSubmitting = false
     weak var delegate:setViewdelegat!
     let style = ["原創","原創二值化", "衡山毛筆", "雁宇落雁","青松手寫","Dengxian","大陸宋體","fzshuti","漢儀新帝永樂大典","微軟正黑體","教育部隸書","王漢中行書","新帝竹林體","仿宋體","中易黑體","漢儀新蒂唐朝體","华文仿宋","STSong","隨峰體","宋體","小賴字體","標楷體"]
     let blender = ["無","原創","原創二值化", "衡山毛筆", "雁宇落雁","青松手寫","Dengxian","大陸宋體","fzshuti","漢儀新帝永樂大典","微軟正黑體","教育部隸書","王漢中行書","新帝竹林體","仿宋體","中易黑體","漢儀新蒂唐朝體","华文仿宋","STSong","隨峰體","宋體","小賴字體","標楷體"]
@@ -91,6 +93,11 @@ class setViewController: UIViewController, UITextFieldDelegate,UIColorPickerView
         layoutContent()
 
         let tap: UITapGestureRecognizer = UITapGestureRecognizer(target: self, action: #selector(setViewController.dismissKeyboard))
+        // cancelsTouchesInView 預設是 true，加在 self.view 上的 tap gesture 會
+        // 把底下 UIButton 的 touch 吃掉，導致 .touchUpInside 收不到——這也是
+        // 原本所有按鈕只能用 .touchDown 的原因。關掉它之後按鈕才能改回
+        // 標準的 .touchUpInside（按下去再放開才算，拖開可取消、不會連點誤觸）。
+        tap.cancelsTouchesInView = false
         self.view.addGestureRecognizer(tap)
         // Do any additional setup after loading the view.
     }
@@ -164,7 +171,7 @@ class setViewController: UIViewController, UITextFieldDelegate,UIColorPickerView
         wordstylebutton.configuration?.baseBackgroundColor = .systemBlue
         wordstylebutton.configuration?.title = "更改字體&混合字體"
         
-        wordstylebutton.addTarget(self, action: #selector(openstylepicker), for: .touchDown)
+        wordstylebutton.addTarget(self, action: #selector(openstylepicker), for: .touchUpInside)
         let cancelbutton = UIBarButtonItem(title: "取消", style: .plain, target: self, action: #selector(cancelstylepicker))
         let spacebutton=UIBarButtonItem(systemItem: .flexibleSpace)
         let changebutton = UIBarButtonItem(title: "更改", style: .plain, target:self, action: #selector(closestylepicker))
@@ -206,6 +213,16 @@ class setViewController: UIViewController, UITextFieldDelegate,UIColorPickerView
         sampleTextField.returnKeyType = UIReturnKeyType.done
         sampleTextField.clearButtonMode = UITextField.ViewMode.whileEditing
         sampleTextField.delegate = self
+        // 原本 goalString 只有在 textFieldShouldReturn（鍵盤右下角 Done）
+        // 才會被寫入，所以「打完字直接按確認設定」或「點空白處收鍵盤」、
+        // 「按更改字體讓 picker 搶走 first responder」這幾種收鍵盤的路徑都
+        // 會繞過它，送出的其實是上一次的（或預設的「測試文字測試文字」）
+        // ——這就是客製化想練的字「有時成功有時失敗」的主因。改成邊打邊同步，
+        // 收鍵盤的方式就不再影響結果。
+        sampleTextField.addTarget(self, action: #selector(goalTextChanged(_:)), for: .editingChanged)
+    }
+    @objc func goalTextChanged(_ sender: UITextField) {
+        goalString = sender.text ?? ""
     }
     func setupwordlengthslide(){
         wordlengthslider.maximumValue=120
@@ -231,7 +248,7 @@ class setViewController: UIViewController, UITextFieldDelegate,UIColorPickerView
         confirmButton.configuration = .filled()
         confirmButton.configuration?.baseBackgroundColor = .systemBlue
         confirmButton.configuration?.title = "確認設定"
-        confirmButton.addTarget(self, action: #selector(returndata), for: .touchDown)
+        confirmButton.addTarget(self, action: #selector(returndata), for: .touchUpInside)
     }
     func setupSwitcher(){
         switchControltext.text="字帖模式"
@@ -243,7 +260,7 @@ class setViewController: UIViewController, UITextFieldDelegate,UIColorPickerView
         changecolor.configuration = .filled()
         changecolor.configuration?.baseBackgroundColor = .systemBlue
         changecolor.configuration?.image=UIImage(systemName:"paintpalette")
-        changecolor.addTarget(self, action: #selector(tapcolorpicker), for: .touchDown)
+        changecolor.addTarget(self, action: #selector(tapcolorpicker), for: .touchUpInside)
     }
     @objc func tapcolorpicker(){
         let colorPickerVC=UIColorPickerViewController()
@@ -299,6 +316,12 @@ class setViewController: UIViewController, UITextFieldDelegate,UIColorPickerView
         return true
     }
     @objc func openstylepicker(){
+        // nowstyle／blenderstytleindex 只有工具列的「更改」（closestylepicker）
+        // 才會提交。如果上次是滾一滾然後按「取消」或點空白處關掉，picker 會
+        // 停在那個沒被採用的位置，下次打開看起來像已經選好了，實際上送出的
+        // 還是舊風格。每次打開都先轉回真正生效中的選擇，畫面就不會騙人。
+        wordstyle.selectRow(nowstyle, inComponent: 0, animated: false)
+        wordstyle.selectRow(blenderstytleindex, inComponent: 1, animated: false)
         wordstytleTextField.becomeFirstResponder()
     }
     @objc func closestylepicker(){
@@ -316,8 +339,19 @@ class setViewController: UIViewController, UITextFieldDelegate,UIColorPickerView
         self.view.endEditing(true)
     }
     @objc func returndata(){
+        self.view.endEditing(true)
+        guard !isSubmitting else { return }
         if showFormFlag{
-            producewordimage(goalword: self.goalString)
+            // 空字串送進 CalligraphyAPIClient.synthesize 會直接丟
+            // APIClientError.invalidText，原本只會 print 到 console，使用者
+            // 只看到「按了沒反應」。這裡先攔下來並明確告知。
+            let wanted = goalString.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !wanted.isEmpty else {
+                showMessage("請先輸入想練的字")
+                return
+            }
+            setSubmitting(true)
+            producewordimage(goalword: wanted)
         }
         else{
             let blend = currentBlend
@@ -327,6 +361,19 @@ class setViewController: UIViewController, UITextFieldDelegate,UIColorPickerView
 //        print(goalwordimagebase64)
 //        delegate.setvalue(self, wordlengt: wordlength, colnum: colwordnum,words:goalwordimagebase64,flag: showFormFlag)
 //        dismiss(animated: true)
+    }
+    /// 送出期間把「確認設定」鎖起來並顯示進度，避免連點送出多個請求，
+    /// 也讓使用者看得出來正在等伺服器回應（/synthesize 要跑模型推論）。
+    private func setSubmitting(_ submitting: Bool) {
+        isSubmitting = submitting
+        confirmButton.isEnabled = !submitting
+        confirmButton.configuration?.showsActivityIndicator = submitting
+        confirmButton.configuration?.title = submitting ? "產生中…" : "確認設定"
+    }
+    private func showMessage(_ message: String) {
+        let alert = UIAlertController(title: nil, message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "好", style: .default))
+        present(alert, animated: true)
     }
     @objc func switchChanged(_ sender: UISwitch) {
         if sender.isOn {
@@ -413,6 +460,7 @@ class setViewController: UIViewController, UITextFieldDelegate,UIColorPickerView
                 )
                 let images = results.map { $0.imageBase64 }
                 await MainActor.run {
+                    setSubmitting(false)
                     delegate.setvalue(
                         self, wordlengt: wordlength, colnum: colwordnum, words: images,
                         flag: showFormFlag, strokefalg: showStroke,
@@ -424,6 +472,12 @@ class setViewController: UIViewController, UITextFieldDelegate,UIColorPickerView
             } catch {
                 let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
                 print("打字生成失敗：\(message)")
+                // 原本失敗時只有 print，設定頁就這樣停在原地不關也不提示，
+                // 使用者分不出「正在跑」還是「失敗了」。改成解鎖按鈕並明確告知。
+                await MainActor.run {
+                    setSubmitting(false)
+                    showMessage("打字生成失敗：\(message)")
+                }
             }
         }
     }
