@@ -1,0 +1,51 @@
+name: Build Unsigned IPA
+
+# 不需要付費 Apple Developer 帳號、也不需要 Mac：
+# 這個 workflow 在 GitHub 提供的 macOS runner 上，用 Xcode 關掉程式碼簽署
+# 直接編出一個「未簽署」的 .app，打包成 .ipa。
+# 下載下來的 .ipa 不能直接裝到 iPhone/iPad，要再用 AltStore / Sideloadly
+# 等工具搭配你自己的免費 Apple ID 重新簽署、側載安裝。
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build unsigned .app for iOS device
+        run: |
+          xcodebuild \
+            -project smartCalligraphyPractice.xcodeproj \
+            -scheme smartCalligraphyPractice \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_ENTITLEMENTS="" \
+            clean build
+
+      - name: Package .ipa
+        run: |
+          set -e
+          APP_PATH="build/Build/Products/Release-iphoneos/smartCalligraphyPractice.app"
+          if [ ! -d "$APP_PATH" ]; then
+            echo "找不到 .app，實際目錄內容："
+            find build/Build/Products -maxdepth 2
+            exit 1
+          fi
+          mkdir -p Payload
+          cp -r "$APP_PATH" Payload/
+          zip -r smartCalligraphyPractice-unsigned.ipa Payload
+
+      - name: Upload .ipa
+        uses: actions/upload-artifact@v4
+        with:
+          name: smartCalligraphyPractice-unsigned-ipa
+          path: smartCalligraphyPractice-unsigned.ipa
